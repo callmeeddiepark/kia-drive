@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>KIA Movement Navigator</title>
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pretendard',-apple-system,system-ui,sans-serif}
+
+/* ── Layers ── */
+#roadCanvas{position:fixed;inset:0;z-index:1;width:100%;height:100%}
+#interiorCanvas{position:fixed;inset:0;z-index:3;width:100%;height:100%;pointer-events:none}
+#vignette{position:fixed;inset:0;z-index:2;background:radial-gradient(ellipse 100% 80% at 50% 100%,rgba(0,0,0,.55) 0%,transparent 60%);pointer-events:none}
+
+/* ── Windshield UI layer ── */
+#uiLayer{position:fixed;inset:0;z-index:4;pointer-events:none}
+
+/* ── Question ── */
+#questionWrap{
+  position:absolute;
+  left:50%;top:50%;
+  transform:translate(-50%,-50%) scale(0.05);
+  transform-origin:center center;
+  opacity:0;
+  transition:transform 1.4s cubic-bezier(0.16,1,0.3,1), opacity 0.6s;
+  text-align:center;
+  pointer-events:none;
+  width:80%;
+  /* Will be repositioned by JS to windshield center */
+}
+#questionWrap.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+#questionText{
+  font-size:clamp(20px,3.5vw,42px);
+  font-weight:900;
+  color:#fff;
+  letter-spacing:-0.03em;
+  line-height:1.2;
+  text-shadow:0 2px 24px rgba(0,0,0,.9),0 0 60px rgba(0,0,0,.5);
+}
+
+/* ── Choices ── */
+.choice{
+  position:absolute;
+  bottom:6%;
+  opacity:0;
+  transform:translateY(12px);
+  transition:opacity .5s .5s, transform .5s .5s;
+  pointer-events:auto;
+  cursor:pointer;
+  text-align:center;
+}
+.choice.show{opacity:1;transform:translateY(0)}
+#choiceLeft{left:8%;text-align:left}
+#choiceRight{right:8%;text-align:right}
+.choice-num{
+  display:block;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.18em;
+  color:rgba(255,255,255,.5);
+  margin-bottom:5px;
+}
+.choice-text{
+  display:block;
+  font-size:clamp(14px,2.2vw,24px);
+  font-weight:800;
+  color:#fff;
+  line-height:1.3;
+  letter-spacing:-0.02em;
+  text-shadow:0 2px 16px rgba(0,0,0,.9);
+  transition:color .2s;
+}
+.choice:hover .choice-text{color:#9FE7FF}
+
+/* ── Turn arrows ── */
+.arrow{
+  position:absolute;
+  bottom:3%;
+  font-size:clamp(20px,3vw,32px);
+  color:rgba(255,255,255,.4);
+  opacity:0;
+  transition:opacity .4s .6s;
+  pointer-events:none;
+}
+.arrow.show{opacity:1}
+#arrLeft{left:6%}
+#arrRight{right:6%}
+
+/* ── Road split indicator ── */
+#splitLine{
+  position:absolute;
+  left:50%;
+  transform:translateX(-50%);
+  width:2px;
+  background:rgba(255,255,255,.3);
+  opacity:0;
+  transition:opacity .5s .4s;
+  pointer-events:none;
+}
+#splitLine.show{opacity:1}
+
+/* ── Steering wheel ── */
+#wheelWrap{
+  position:fixed;
+  bottom:-22%;
+  left:50%;
+  transform:translateX(-50%);
+  z-index:5;
+  width:min(340px,52vw);
+  cursor:grab;
+  touch-action:none;
+  user-select:none;
+}
+#wheelWrap:active{cursor:grabbing}
+#wheelImg{
+  width:100%;
+  display:block;
+  mix-blend-mode:multiply;
+  transition:transform .5s cubic-bezier(.25,1,.5,1);
+  transform-origin:50% 50%;
+  filter:drop-shadow(0 8px 24px rgba(0,0,0,.5));
+}
+
+/* ── Intro ── */
+#intro{
+  position:fixed;inset:0;z-index:20;
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  gap:20px;
+  background:rgba(0,0,0,.55);
+  backdrop-filter:blur(2px);
+}
+#intro.gone{pointer-events:none;opacity:0;transition:opacity .8s}
+.intro-kia{font-size:clamp(11px,1.4vw,14px);letter-spacing:.28em;color:rgba(255,255,255,.5);font-weight:600}
+.intro-title{font-size:clamp(36px,7vw,80px);font-weight:900;color:#fff;letter-spacing:-.04em;line-height:.95;text-align:center}
+.intro-sub{font-size:clamp(13px,1.6vw,18px);color:rgba(255,255,255,.6);text-align:center;line-height:1.7}
+.intro-hint{font-size:clamp(11px,1.3vw,14px);color:rgba(255,255,255,.35);text-align:center;letter-spacing:.04em}
+.start-btn{
+  background:#9FE7FF;color:#07090D;border:none;
+  padding:clamp(13px,1.8vw,18px) clamp(32px,4vw,56px);
+  font-size:clamp(14px,1.6vw,17px);font-weight:800;
+  border-radius:999px;cursor:pointer;font-family:inherit;
+  letter-spacing:-.01em;
+  transition:transform .2s,box-shadow .2s;
+  box-shadow:0 0 0 rgba(159,231,255,0);
+}
+.start-btn:hover{transform:scale(1.04);box-shadow:0 0 32px rgba(159,231,255,.4)}
+
+/* ── Result ── */
+#result{
+  position:fixed;inset:0;z-index:20;
+  display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.75);
+  backdrop-filter:blur(12px);
+  padding:20px;
+}
+#result.show{display:flex}
+.result-inner{
+  display:flex;flex-direction:column;align-items:center;
+  gap:16px;text-align:center;
+  animation:riseUp .8s cubic-bezier(.16,1,.3,1) both;
+}
+@keyframes riseUp{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}
+.result-inner img{
+  height:min(70vh,540px);width:auto;max-width:88vw;
+  border-radius:14px;
+  box-shadow:0 32px 80px rgba(0,0,0,.8);
+}
+.result-btns{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+.btn-retry{
+  background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.25);
+  padding:12px 32px;font-size:14px;font-weight:700;border-radius:999px;cursor:pointer;
+  font-family:inherit;transition:background .2s;
+}
+.btn-retry:hover{background:rgba(255,255,255,.22)}
+.btn-save{
+  background:#9FE7FF;color:#07090D;border:none;
+  padding:12px 32px;font-size:14px;font-weight:700;border-radius:999px;cursor:pointer;
+  font-family:inherit;transition:opacity .2s;
+}
+.btn-save:hover{opacity:.85}
+
+/* ── Progress ── */
+#progress{
+  position:fixed;top:20px;left:50%;transform:translateX(-50%);
+  z-index:6;display:flex;gap:6px;opacity:0;transition:opacity .5s;
+}
+#progress.show{opacity:1}
+.dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.25);transition:background .3s}
+.dot.done{background:rgba(255,255,255,.8)}
+.dot.active{background:#9FE7FF}
+</style>
+</head>
+<body>
+
+<!-- Road animation -->
+<canvas id="roadCanvas"></canvas>
+
+<!-- Vignette -->
+<div id="vignette"></div>
+
+<!-- Interior overlay (windshield hole) -->
+<canvas id="interiorCanvas"></canvas>
+
+<!-- UI layer (windshield area) -->
+<div id="uiLayer">
+  <div id="questionWrap">
+    <p id="questionText"></p>
+  </div>
+
+  <!-- Choices -->
+  <div class="choice" id="choiceLeft" onclick="select('left')">
+    <span class="choice-num">01</span>
+    <span class="choice-text" id="leftText"></span>
+  </div>
+  <div class="choice" id="choiceRight" onclick="select('right')">
+    <span class="choice-num">02</span>
+    <span class="choice-text" id="rightText"></span>
+  </div>
+
+  <!-- Arrows -->
+  <div class="arrow" id="arrLeft">←</div>
+  <div class="arrow" id="arrRight">→</div>
+
+  <!-- Split divider -->
+  <div id="splitLine"></div>
+</div>
+
+<!-- Progress dots -->
+<div id="progress">
+  <div class="dot" id="d0"></div>
+  <div class="dot" id="d1"></div>
+  <div class="dot" id="d2"></div>
+  <div class="dot" id="d3"></div>
+  <div class="dot" id="d4"></div>
+  <div class="dot" id="d5"></div>
+</div>
+
+<!-- Steering wheel -->
+<div id="wheelWrap">
+  <img id="wheelImg" src="steering_wheel.jpg" draggable="false">
+</div>
+
+<!-- Intro -->
+<div id="intro">
+  <p class="intro-kia">MOVEMENT THAT INSPIRES</p>
+  <h1 class="intro-title">MOVEMENT<br>NAVIGATOR</h1>
+  <p class="intro-sub">당신의 이동 방식을 발견하세요.<br>핸들을 돌려 여정을 선택하세요.</p>
+  <button class="start-btn" onclick="startQuiz()">시작하기</button>
+  <p class="intro-hint">← 핸들을 좌우로 드래그하거나 선택지를 클릭 →</p>
+</div>
+
+<!-- Result -->
+<div id="result">
+  <div class="result-inner" id="resultInner"></div>
+</div>
+
+<script>
+// ─── Questions ────────────────────────────────────────────
+const QUESTIONS = [
+  { q:'갑자기 약속이 취소됐다', left:'새로운 곳을\n탐험해볼까', right:'오늘은 그냥\n쉬어야겠다' },
+  { q:'짐을 쌀 때 나는', left:'필요한 것만\n최소로', right:'혹시 모르니\n다 챙겨' },
+  { q:'길을 잃었다', left:'이것도\n여행이지', right:'빨리 제자리를\n찾아야해' },
+  { q:'예상치 못한 일이 생겼다', left:'오히려\n좋아', right:'계획대로\n돌아가고 싶어' },
+  { q:'여행을 계획할 때', left:'목적지만\n정해두고', right:'일정을\n꼼꼼히 짜고' },
+  { q:'가고 싶은 곳은?', left:'처음 가보는\n낯선 곳', right:'자주 가던\n편안한 곳' },
+];
+
+const RESULTS = [
+  { img:'result-0.jpg', file:'result-0.jpg' },
+  { img:'result-1.jpg', file:'result-1.jpg' },
+  { img:'result-2.jpg', file:'result-2.jpg' },
+  { img:'result-3.jpg', file:'result-3.jpg' },
+];
+
+// ─── State ───────────────────────────────────────────────
+let W, H;
+let quizActive = false;
+let currentQ = -1;
+let phase = 'idle'; // idle | approaching | waiting | selecting
+let answers = [];
+let roadOffset = 0;
+let curveFactor = 0;    // -1..1 (left..right)
+let targetCurve = 0;
+let wheelRotate = 0;
+let targetWheelRot = 0;
+let sceneT = 0; // scene transition 0→1
+let approachT = 0;
+let interiorReady = false;
+// Windshield bounds (set after resize)
+let WS = { x1:0, x2:0, y1:0, y2:0, cx:0, cy:0, pts:[] };
+
+// ─── Windshield polygon in original image coords (1920×1014) ──
+const WS_IMG = [[160,12],[1760,12],[1690,430],[230,430]];
+
+// ─── Scenes (sky1, sky2=horizon, ground, road, fog) ──────
+const SCENES = [
+  { s1:'#6AB4E8', s2:'#C8DFF0', g1:'#7A9A6A', g2:'#5A7A4A', r:'#2d2d2d', f:'rgba(196,220,240,.35)' },
+  { s1:'#3A5A35', s2:'#7A9A5A', g1:'#2A4A20', g2:'#1A3010', r:'#181818', f:'rgba(122,154,90,.3)' },
+  { s1:'#87CEEB', s2:'#E0C89A', g1:'#A07A5A', g2:'#7A5A3A', r:'#302820', f:'rgba(224,200,154,.3)' },
+  { s1:'#1A1A3A', s2:'#3A3A6A', g1:'#141422', g2:'#0E0E18', r:'#0d0d18', f:'rgba(80,80,140,.25)' },
+  { s1:'#87CEEB', s2:'#FFD4A0', g1:'#C8A86A', g2:'#A07840', r:'#2a2318', f:'rgba(255,212,160,.3)' },
+  { s1:'#4A7AAB', s2:'#A0C8E8', g1:'#4A7A9A', g2:'#2A5A7A', r:'#1a2a35', f:'rgba(160,200,232,.3)' },
+];
+
+let curScene = 0, nxtScene = 0, sceneBlend = 1;
+
+// ─── Canvas refs ─────────────────────────────────────────
+const roadCanvas = document.getElementById('roadCanvas');
+const rCtx = roadCanvas.getContext('2d');
+const interiorCanvas = document.getElementById('interiorCanvas');
+const iCtx = interiorCanvas.getContext('2d');
+
+// ─── Interior image ──────────────────────────────────────
+const interiorImg = new Image();
+interiorImg.onload = () => { interiorReady = true; renderInterior(); };
+interiorImg.src = 'ev9_interior.avif';
+
+function getScaleOffset() {
+  const iW = 1920, iH = 1014;
+  const sc = Math.max(W/iW, H/iH);
+  const dW = iW*sc, dH = iH*sc;
+  const dx = (W-dW)/2, dy = (H-dH)/2;
+  return { sc, dW, dH, dx, dy };
+}
+
+function computeWS() {
+  const { sc, dx, dy } = getScaleOffset();
+  const pts = WS_IMG.map(([ix,iy]) => [dx+ix*sc, dy+iy*sc]);
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  WS = {
+    x1:Math.min(...xs), x2:Math.max(...xs),
+    y1:Math.min(...ys), y2:Math.max(...ys),
+    cx:(Math.min(...xs)+Math.max(...xs))/2,
+    cy:(Math.min(...ys)+Math.max(...ys))/2,
+    pts
+  };
+  // Position UI elements
+  positionUI();
+}
+
+function renderInterior() {
+  if(!interiorReady) return;
+  const { sc, dW, dH, dx, dy } = getScaleOffset();
+  iCtx.clearRect(0,0,W,H);
+  iCtx.drawImage(interiorImg, dx, dy, dW, dH);
+  // Cut windshield
+  iCtx.globalCompositeOperation = 'destination-out';
+  iCtx.beginPath();
+  const pts = WS_IMG.map(([ix,iy]) => [dx+ix*sc, dy+iy*sc]);
+  iCtx.moveTo(pts[0][0], pts[0][1]);
+  for(let i=1;i<pts.length;i++) iCtx.lineTo(pts[i][0], pts[i][1]);
+  iCtx.closePath();
+  iCtx.fill();
+  iCtx.globalCompositeOperation = 'source-over';
+}
+
+function positionUI() {
+  const qw = document.getElementById('questionWrap');
+  const wsH = WS.y2 - WS.y1;
+  const wsW = WS.x2 - WS.x1;
+  // Center question in windshield
+  qw.style.left = WS.cx + 'px';
+  qw.style.top = (WS.y1 + wsH * 0.42) + 'px';
+  // Width relative to windshield
+  qw.style.width = (wsW * 0.8) + 'px';
+
+  // Choices at bottom of windshield
+  const choiceY = WS.y2 - 28;
+  document.getElementById('choiceLeft').style.top = '';
+  document.getElementById('choiceLeft').style.bottom = (H - WS.y2 + 20) + 'px';
+  document.getElementById('choiceLeft').style.left = (WS.x1 + wsW * 0.05) + 'px';
+  document.getElementById('choiceRight').style.bottom = (H - WS.y2 + 20) + 'px';
+  document.getElementById('choiceRight').style.right = (W - WS.x2 + wsW * 0.05) + 'px';
+
+  // Arrows
+  document.getElementById('arrLeft').style.bottom = (H - WS.y2 + 8) + 'px';
+  document.getElementById('arrLeft').style.left = (WS.x1 + wsW * 0.02) + 'px';
+  document.getElementById('arrRight').style.bottom = (H - WS.y2 + 8) + 'px';
+  document.getElementById('arrRight').style.right = (W - WS.x2 + wsW * 0.02) + 'px';
+
+  // Split line
+  const sl = document.getElementById('splitLine');
+  sl.style.left = WS.cx + 'px';
+  sl.style.top = (WS.y1 + wsH * 0.5) + 'px';
+  sl.style.height = wsH * 0.5 + 'px';
+}
+
+// ─── Resize ──────────────────────────────────────────────
+function resize() {
+  W = roadCanvas.width = interiorCanvas.width = window.innerWidth;
+  H = roadCanvas.height = interiorCanvas.height = window.innerHeight;
+  renderInterior();
+  computeWS();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── Color helpers ───────────────────────────────────────
+function hx(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)] }
+function lerp(a,b,t){ return a+(b-a)*t }
+function lc(c1,c2,t){
+  const a=hx(c1),b=hx(c2);
+  return `rgb(${~~lerp(a[0],b[0],t)},${~~lerp(a[1],b[1],t)},${~~lerp(a[2],b[2],t)})`;
+}
+function blendScene(k,t) {
+  const sc = SCENES[curScene], nx = SCENES[nxtScene];
+  return lc(sc[k], nx[k], t);
+}
+
+// ─── Road drawing ─────────────────────────────────────────
+function drawRoad() {
+  rCtx.clearRect(0,0,W,H);
+  const t = Math.min(sceneBlend,1);
+  const { x1, x2, y1, y2, cx, pts } = WS;
+  const wsW = x2-x1, wsH = y2-y1;
+
+  // Clip to windshield
+  rCtx.save();
+  rCtx.beginPath();
+  rCtx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) rCtx.lineTo(pts[i][0],pts[i][1]);
+  rCtx.closePath();
+  rCtx.clip();
+
+  // Vanishing point (shifts with curve)
+  const vx = cx + curveFactor * wsW * 0.22;
+  const vy = y1 + wsH * 0.44;
+
+  // Sky
+  const sg = rCtx.createLinearGradient(0,y1,0,vy);
+  sg.addColorStop(0, blendScene('s1',t));
+  sg.addColorStop(1, blendScene('s2',t));
+  rCtx.fillStyle = sg;
+  rCtx.fillRect(x1,y1,wsW,vy-y1);
+
+  // Ground
+  const gg = rCtx.createLinearGradient(0,vy,0,y2);
+  gg.addColorStop(0, blendScene('s2',t));
+  gg.addColorStop(0.3, blendScene('g1',t));
+  gg.addColorStop(1, blendScene('g2',t));
+  rCtx.fillStyle = gg;
+  rCtx.fillRect(x1,vy,wsW,y2-vy);
+
+  // Road
+  const roadHW = wsW * 0.42;
+  rCtx.fillStyle = blendScene('r',t);
+  rCtx.beginPath();
+  rCtx.moveTo(vx, vy);
+  rCtx.lineTo(cx+roadHW+curveFactor*wsW*0.1, y2);
+  rCtx.lineTo(cx-roadHW+curveFactor*wsW*0.1, y2);
+  rCtx.closePath();
+  rCtx.fill();
+
+  // Center dashes
+  const dashCount = 10;
+  const dashLen = 0.05;
+  const spd = roadOffset * 0.018;
+  for(let i=0;i<dashCount;i++){
+    let f = ((i/dashCount + spd) % 1);
+    if(f < 0.04) continue; // skip near VP
+    const f2 = Math.min(f+dashLen/dashCount*5,1);
+    const p1x = vx + (cx-vx)*f, p1y = vy + (y2-vy)*f;
+    const p2x = vx + (cx-vx)*f2, p2y = vy + (y2-vy)*f2;
+    rCtx.lineWidth = f*5;
+    rCtx.strokeStyle = `rgba(255,255,255,${Math.min(f*0.9,0.75)})`;
+    rCtx.setLineDash([]);
+    rCtx.beginPath();
+    rCtx.moveTo(p1x,p1y);
+    rCtx.lineTo(p2x,p2y);
+    rCtx.stroke();
+  }
+
+  // Road edges
+  rCtx.lineWidth = 2;
+  rCtx.strokeStyle = 'rgba(255,255,255,0.6)';
+  rCtx.setLineDash([]);
+  rCtx.beginPath();
+  rCtx.moveTo(vx,vy);
+  rCtx.lineTo(cx+roadHW+curveFactor*wsW*0.1,y2);
+  rCtx.stroke();
+  rCtx.beginPath();
+  rCtx.moveTo(vx,vy);
+  rCtx.lineTo(cx-roadHW+curveFactor*wsW*0.1,y2);
+  rCtx.stroke();
+
+  // Atmospheric fog near horizon
+  const fg = rCtx.createLinearGradient(0,vy-wsH*0.05,0,vy+wsH*0.08);
+  fg.addColorStop(0,'transparent');
+  fg.addColorStop(0.5, blendScene('f',t));
+  fg.addColorStop(1,'transparent');
+  rCtx.fillStyle = fg;
+  rCtx.fillRect(x1,vy-wsH*0.05,wsW,wsH*0.13);
+
+  // Trees silhouettes (parallax)
+  drawTrees(vx, vy, x1, x2, y2, t);
+
+  rCtx.restore();
+}
+
+function drawTrees(vx, vy, x1, x2, y2, t) {
+  const g1 = blendScene('g1',t);
+  const g2 = blendScene('g2',t);
+  const treeOff = (roadOffset * 0.04) % 200;
+  const sides = [{from:x1, to:vx-40, dir:-1}, {from:vx+40, to:x2, dir:1}];
+  sides.forEach(({from,to,dir})=>{
+    const side = dir === -1 ? 'left' : 'right';
+    for(let i=-1;i<8;i++){
+      const fi = (i + treeOff/200) % 8;
+      const depth = fi / 8; // 0=near VP, 1=close
+      const tx = dir === -1 ? (vx-40) + (from-(vx-40))*depth : (vx+40) + (to-(vx+40))*depth;
+      const ty = vy + (y2-vy)*depth;
+      const th = (depth * 0.9 + 0.1) * (y2-vy) * 0.45;
+      const tw = th * 0.32;
+      rCtx.fillStyle = lc(g1,g2,depth);
+      // Pine tree
+      rCtx.beginPath();
+      rCtx.moveTo(tx, ty);
+      rCtx.lineTo(tx+tw, ty);
+      rCtx.lineTo(tx+tw/2, ty-th);
+      rCtx.closePath();
+      rCtx.fill();
+    }
+  });
+}
+
+// ─── Animation loop ───────────────────────────────────────
+let lastTs = 0;
+function loop(ts) {
+  const dt = Math.min(ts-lastTs, 60);
+  lastTs = ts;
+
+  if(quizActive) roadOffset += dt * 0.085;
+  curveFactor += (targetCurve - curveFactor) * 0.07;
+  sceneBlend = Math.min(sceneBlend + dt * 0.0015, 1);
+  wheelRotate += (targetWheelRot - wheelRotate) * 0.1;
+  document.getElementById('wheelImg').style.transform = `rotate(${wheelRotate}deg)`;
+
+  if(quizActive && phase === 'idle') {
+    phase = 'starting';
+    setTimeout(nextQuestion, 500);
+  }
+
+  if(phase === 'approaching') {
+    approachT = Math.min(approachT + dt * 0.0008, 1);
+    if(approachT >= 1) { phase = 'waiting'; showQuestion(); }
+    // Scale question from VP outward
+    const ease = 1 - Math.pow(1-approachT,3);
+    const scl = 0.05 + ease * 0.95;
+    document.getElementById('questionWrap').style.transform = `translate(-50%,-50%) scale(${scl})`;
+    document.getElementById('questionWrap').style.opacity = approachT > 0.3 ? (approachT-0.3)/0.7 : 0;
+  }
+
+  drawRoad();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ─── Quiz flow ────────────────────────────────────────────
+function nextQuestion() {
+  currentQ++;
+  if(currentQ >= QUESTIONS.length) { showResult(); return; }
+  const q = QUESTIONS[currentQ];
+
+  // Update progress
+  document.getElementById('progress').classList.add('show');
+  for(let i=0;i<6;i++){
+    const d = document.getElementById('d'+i);
+    d.className = 'dot' + (i<currentQ?' done':i===currentQ?' active':'');
+  }
+
+  // Set scene
+  nxtScene = currentQ;
+  sceneBlend = 0;
+
+  // Set texts
+  document.getElementById('questionText').textContent = q.q;
+  document.getElementById('leftText').innerHTML = q.left.replace('\n','<br>');
+  document.getElementById('rightText').innerHTML = q.right.replace('\n','<br>');
+
+  // Hide choices
+  document.getElementById('choiceLeft').classList.remove('show');
+  document.getElementById('choiceRight').classList.remove('show');
+  document.getElementById('arrLeft').classList.remove('show');
+  document.getElementById('arrRight').classList.remove('show');
+  document.getElementById('splitLine').classList.remove('show');
+  document.getElementById('questionWrap').classList.remove('show');
+  document.getElementById('questionWrap').style.opacity = '0';
+  document.getElementById('questionWrap').style.transform = 'translate(-50%,-50%) scale(0.05)';
+
+  approachT = 0;
+  phase = 'approaching';
+}
+
+function showQuestion() {
+  document.getElementById('questionWrap').classList.add('show');
+  document.getElementById('choiceLeft').classList.add('show');
+  document.getElementById('choiceRight').classList.add('show');
+  document.getElementById('arrLeft').classList.add('show');
+  document.getElementById('arrRight').classList.add('show');
+  document.getElementById('splitLine').classList.add('show');
+}
+
+function select(dir) {
+  if(phase !== 'waiting') return;
+  phase = 'selecting';
+  answers.push(dir);
+
+  // Wheel turn
+  targetWheelRot = dir === 'left' ? -38 : 38;
+  targetCurve = dir === 'left' ? -1 : 1;
+
+  // Hide UI
+  document.getElementById('questionWrap').classList.remove('show');
+  document.getElementById('choiceLeft').classList.remove('show');
+  document.getElementById('choiceRight').classList.remove('show');
+  document.getElementById('arrLeft').classList.remove('show');
+  document.getElementById('arrRight').classList.remove('show');
+  document.getElementById('splitLine').classList.remove('show');
+
+  setTimeout(() => {
+    targetWheelRot = 0;
+    targetCurve = 0;
+    phase = 'idle';
+    curScene = nxtScene;
+  }, 1400);
+}
+
+// ─── Result ───────────────────────────────────────────────
+function calcResult() {
+  const A = [0,1,2].filter(i=>answers[i]==='left').length;
+  const P = [3,4,5].filter(i=>answers[i]==='left').length;
+  if(A>=2&&P>=2) return 2;
+  if(A>=2&&P<2)  return 1;
+  if(A<2&&P>=2)  return 0;
+  return 3;
+}
+
+function showResult() {
+  quizActive = false;
+  const idx = calcResult();
+  const r = RESULTS[idx];
+  document.getElementById('resultInner').innerHTML = `
+    <img src="${r.img}" alt="result" id="resultImg">
+    <div class="result-btns">
+      <button class="btn-retry" onclick="location.reload()">다시 하기</button>
+      <button class="btn-save" onclick="downloadResult('${r.file}')">이미지 저장</button>
+    </div>`;
+  document.getElementById('result').classList.add('show');
+}
+
+function downloadResult(file) {
+  const a = document.createElement('a');
+  a.href = file;
+  a.download = file;
+  a.click();
+}
+
+// ─── Start ────────────────────────────────────────────────
+function startQuiz() {
+  document.getElementById('intro').classList.add('gone');
+  setTimeout(()=>document.getElementById('intro').style.display='none',900);
+  quizActive = true;
+}
+
+// ─── Wheel drag interaction ───────────────────────────────
+let dragX0 = null, isDragging = false;
+const wrap = document.getElementById('wheelWrap');
+wrap.addEventListener('mousedown', e=>{ dragX0=e.clientX; isDragging=true; });
+window.addEventListener('mousemove', e=>{
+  if(!isDragging||phase!=='waiting') return;
+  const d=e.clientX-dragX0;
+  if(Math.abs(d)>45){ select(d<0?'left':'right'); isDragging=false; }
+});
+window.addEventListener('mouseup', ()=>{ isDragging=false; });
+wrap.addEventListener('touchstart', e=>{ dragX0=e.touches[0].clientX; isDragging=true; },{passive:true});
+window.addEventListener('touchmove', e=>{
+  if(!isDragging||phase!=='waiting') return;
+  const d=e.touches[0].clientX-dragX0;
+  if(Math.abs(d)>45){ select(d<0?'left':'right'); isDragging=false; }
+},{passive:true});
+window.addEventListener('touchend', ()=>{ isDragging=false; });
+window.addEventListener('keydown', e=>{
+  if(e.key==='ArrowLeft') select('left');
+  if(e.key==='ArrowRight') select('right');
+});
+</script>
+</body>
+</html>
