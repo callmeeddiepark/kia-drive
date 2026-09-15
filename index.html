@@ -7,7 +7,8 @@
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pretendard',-apple-system,system-ui,sans-serif}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pretendard',-apple-system,system-ui,sans-serif;cursor:grab}
+body:active{cursor:grabbing}
 
 /* ── Layers ── */
 #roadCanvas{position:fixed;inset:0;z-index:1;width:100%;height:100%}
@@ -28,7 +29,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pr
   text-align:center;
   pointer-events:none;
   width:80%;
-  /* Will be repositioned by JS to windshield center */
 }
 #questionWrap.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
 #questionText{
@@ -100,27 +100,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pr
   pointer-events:none;
 }
 #splitLine.show{opacity:1}
-
-/* ── Steering wheel ── */
-#wheelWrap{
-  position:fixed;
-  bottom:-18%;
-  left:-6%;
-  z-index:5;
-  width:min(320px,48vw);
-  cursor:grab;
-  touch-action:none;
-  user-select:none;
-}
-#wheelWrap:active{cursor:grabbing}
-#wheelImg{
-  width:100%;
-  display:block;
-  mix-blend-mode:multiply;
-  transition:transform .5s cubic-bezier(.25,1,.5,1);
-  transform-origin:50% 50%;
-  filter:drop-shadow(0 8px 24px rgba(0,0,0,.5));
-}
 
 /* ── Intro ── */
 #intro{
@@ -200,7 +179,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pr
 <!-- Vignette -->
 <div id="vignette"></div>
 
-<!-- Interior overlay (windshield hole) -->
+<!-- Interior overlay (windshield hole + steering wheel rotation) -->
 <canvas id="interiorCanvas"></canvas>
 
 <!-- UI layer (windshield area) -->
@@ -237,18 +216,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Pr
   <div class="dot" id="d5"></div>
 </div>
 
-<!-- Steering wheel -->
-<div id="wheelWrap">
-  <img id="wheelImg" src="steering_wheel.jpg" draggable="false">
-</div>
-
 <!-- Intro -->
 <div id="intro">
   <p class="intro-kia">MOVEMENT THAT INSPIRES</p>
   <h1 class="intro-title">MOVEMENT<br>NAVIGATOR</h1>
   <p class="intro-sub">당신의 이동 방식을 발견하세요.<br>핸들을 돌려 여정을 선택하세요.</p>
   <button class="start-btn" onclick="startQuiz()">시작하기</button>
-  <p class="intro-hint">← 핸들을 좌우로 드래그하거나 선택지를 클릭 →</p>
+  <p class="intro-hint">← 화면을 좌우로 드래그하거나 선택지를 클릭 →</p>
 </div>
 
 <!-- Result -->
@@ -278,23 +252,29 @@ const RESULTS = [
 let W, H;
 let quizActive = false;
 let currentQ = -1;
-let phase = 'idle'; // idle | approaching | waiting | selecting
+let phase = 'idle';
 let answers = [];
 let roadOffset = 0;
-let curveFactor = 0;    // -1..1 (left..right)
+let curveFactor = 0;
 let targetCurve = 0;
 let wheelRotate = 0;
 let targetWheelRot = 0;
-let sceneT = 0; // scene transition 0→1
+let sceneT = 0;
 let approachT = 0;
 let interiorReady = false;
-// Windshield bounds (set after resize)
 let WS = { x1:0, x2:0, y1:0, y2:0, cx:0, cy:0, pts:[] };
 
 // ─── Windshield polygon in original image coords (1920×1014) ──
-const WS_IMG = [[160,12],[1760,12],[1690,430],[230,430]];
+// New image: ev9_interior_front.avif - wide interior shot
+const WS_IMG = [[380, 0], [1740, 0], [1725, 390], [365, 390]];
 
-// ─── Scenes (sky1, sky2=horizon, ground, road, fog) ──────
+// ─── Steering wheel in original image coords ──────────────
+// Center of the steering wheel in the photo, and its radius
+const SW_CX = 415;
+const SW_CY = 370;
+const SW_R  = 238;
+
+// ─── Scenes ──────────────────────────────────────────────
 const SCENES = [
   { s1:'#6AB4E8', s2:'#C8DFF0', g1:'#7A9A6A', g2:'#5A7A4A', r:'#2d2d2d', f:'rgba(196,220,240,.35)' },
   { s1:'#3A5A35', s2:'#7A9A5A', g1:'#2A4A20', g2:'#1A3010', r:'#181818', f:'rgba(122,154,90,.3)' },
@@ -315,7 +295,7 @@ const iCtx = interiorCanvas.getContext('2d');
 // ─── Interior image ──────────────────────────────────────
 const interiorImg = new Image();
 interiorImg.onload = () => { interiorReady = true; renderInterior(); };
-interiorImg.src = 'ev9_interior.avif';
+interiorImg.src = 'ev9_interior_front.avif';
 
 function getScaleOffset() {
   const iW = 1920, iH = 1014;
@@ -336,16 +316,19 @@ function computeWS() {
     cy:(Math.min(...ys)+Math.max(...ys))/2,
     pts
   };
-  // Position UI elements
   positionUI();
 }
 
 function renderInterior() {
   if(!interiorReady) return;
   const { sc, dW, dH, dx, dy } = getScaleOffset();
+
   iCtx.clearRect(0,0,W,H);
+
+  // 1. Draw full interior
   iCtx.drawImage(interiorImg, dx, dy, dW, dH);
-  // Cut windshield
+
+  // 2. Cut windshield transparent
   iCtx.globalCompositeOperation = 'destination-out';
   iCtx.beginPath();
   const pts = WS_IMG.map(([ix,iy]) => [dx+ix*sc, dy+iy*sc]);
@@ -353,34 +336,45 @@ function renderInterior() {
   for(let i=1;i<pts.length;i++) iCtx.lineTo(pts[i][0], pts[i][1]);
   iCtx.closePath();
   iCtx.fill();
+
+  // 3. Erase original steering wheel area (cut the circle)
+  const swX = dx + SW_CX * sc;
+  const swY = dy + SW_CY * sc;
+  const swR = SW_R * sc;
+  iCtx.beginPath();
+  iCtx.arc(swX, swY, swR, 0, Math.PI * 2);
+  iCtx.fill();
   iCtx.globalCompositeOperation = 'source-over';
+
+  // 4. Draw rotated steering wheel back into that circle
+  iCtx.save();
+  iCtx.beginPath();
+  iCtx.arc(swX, swY, swR, 0, Math.PI * 2);
+  iCtx.clip();
+  iCtx.translate(swX, swY);
+  iCtx.rotate(wheelRotate * Math.PI / 180);
+  iCtx.drawImage(interiorImg, dx - swX, dy - swY, dW, dH);
+  iCtx.restore();
 }
 
 function positionUI() {
   const qw = document.getElementById('questionWrap');
   const wsH = WS.y2 - WS.y1;
   const wsW = WS.x2 - WS.x1;
-  // Center question in windshield
   qw.style.left = WS.cx + 'px';
   qw.style.top = (WS.y1 + wsH * 0.42) + 'px';
-  // Width relative to windshield
   qw.style.width = (wsW * 0.8) + 'px';
 
-  // Choices at bottom of windshield
-  const choiceY = WS.y2 - 28;
-  document.getElementById('choiceLeft').style.top = '';
   document.getElementById('choiceLeft').style.bottom = (H - WS.y2 + 20) + 'px';
   document.getElementById('choiceLeft').style.left = (WS.x1 + wsW * 0.05) + 'px';
   document.getElementById('choiceRight').style.bottom = (H - WS.y2 + 20) + 'px';
   document.getElementById('choiceRight').style.right = (W - WS.x2 + wsW * 0.05) + 'px';
 
-  // Arrows
   document.getElementById('arrLeft').style.bottom = (H - WS.y2 + 8) + 'px';
   document.getElementById('arrLeft').style.left = (WS.x1 + wsW * 0.02) + 'px';
   document.getElementById('arrRight').style.bottom = (H - WS.y2 + 8) + 'px';
   document.getElementById('arrRight').style.right = (W - WS.x2 + wsW * 0.02) + 'px';
 
-  // Split line
   const sl = document.getElementById('splitLine');
   sl.style.left = WS.cx + 'px';
   sl.style.top = (WS.y1 + wsH * 0.5) + 'px';
@@ -391,7 +385,6 @@ function positionUI() {
 function resize() {
   W = roadCanvas.width = interiorCanvas.width = window.innerWidth;
   H = roadCanvas.height = interiorCanvas.height = window.innerHeight;
-  renderInterior();
   computeWS();
 }
 window.addEventListener('resize', resize);
@@ -416,7 +409,6 @@ function drawRoad() {
   const { x1, x2, y1, y2, cx, pts } = WS;
   const wsW = x2-x1, wsH = y2-y1;
 
-  // Clip to windshield
   rCtx.save();
   rCtx.beginPath();
   rCtx.moveTo(pts[0][0],pts[0][1]);
@@ -424,18 +416,15 @@ function drawRoad() {
   rCtx.closePath();
   rCtx.clip();
 
-  // Vanishing point (shifts with curve)
   const vx = cx + curveFactor * wsW * 0.22;
   const vy = y1 + wsH * 0.44;
 
-  // Sky
   const sg = rCtx.createLinearGradient(0,y1,0,vy);
   sg.addColorStop(0, blendScene('s1',t));
   sg.addColorStop(1, blendScene('s2',t));
   rCtx.fillStyle = sg;
   rCtx.fillRect(x1,y1,wsW,vy-y1);
 
-  // Ground
   const gg = rCtx.createLinearGradient(0,vy,0,y2);
   gg.addColorStop(0, blendScene('s2',t));
   gg.addColorStop(0.3, blendScene('g1',t));
@@ -443,7 +432,6 @@ function drawRoad() {
   rCtx.fillStyle = gg;
   rCtx.fillRect(x1,vy,wsW,y2-vy);
 
-  // Road
   const roadHW = wsW * 0.42;
   rCtx.fillStyle = blendScene('r',t);
   rCtx.beginPath();
@@ -453,13 +441,12 @@ function drawRoad() {
   rCtx.closePath();
   rCtx.fill();
 
-  // Center dashes
   const dashCount = 10;
   const dashLen = 0.05;
   const spd = roadOffset * 0.018;
   for(let i=0;i<dashCount;i++){
     let f = ((i/dashCount + spd) % 1);
-    if(f < 0.04) continue; // skip near VP
+    if(f < 0.04) continue;
     const f2 = Math.min(f+dashLen/dashCount*5,1);
     const p1x = vx + (cx-vx)*f, p1y = vy + (y2-vy)*f;
     const p2x = vx + (cx-vx)*f2, p2y = vy + (y2-vy)*f2;
@@ -472,7 +459,6 @@ function drawRoad() {
     rCtx.stroke();
   }
 
-  // Road edges
   rCtx.lineWidth = 2;
   rCtx.strokeStyle = 'rgba(255,255,255,0.6)';
   rCtx.setLineDash([]);
@@ -485,7 +471,6 @@ function drawRoad() {
   rCtx.lineTo(cx-roadHW+curveFactor*wsW*0.1,y2);
   rCtx.stroke();
 
-  // Atmospheric fog near horizon
   const fg = rCtx.createLinearGradient(0,vy-wsH*0.05,0,vy+wsH*0.08);
   fg.addColorStop(0,'transparent');
   fg.addColorStop(0.5, blendScene('f',t));
@@ -493,9 +478,7 @@ function drawRoad() {
   rCtx.fillStyle = fg;
   rCtx.fillRect(x1,vy-wsH*0.05,wsW,wsH*0.13);
 
-  // Trees silhouettes (parallax)
   drawTrees(vx, vy, x1, x2, y2, t);
-
   rCtx.restore();
 }
 
@@ -505,16 +488,14 @@ function drawTrees(vx, vy, x1, x2, y2, t) {
   const treeOff = (roadOffset * 0.04) % 200;
   const sides = [{from:x1, to:vx-40, dir:-1}, {from:vx+40, to:x2, dir:1}];
   sides.forEach(({from,to,dir})=>{
-    const side = dir === -1 ? 'left' : 'right';
     for(let i=-1;i<8;i++){
       const fi = (i + treeOff/200) % 8;
-      const depth = fi / 8; // 0=near VP, 1=close
+      const depth = fi / 8;
       const tx = dir === -1 ? (vx-40) + (from-(vx-40))*depth : (vx+40) + (to-(vx+40))*depth;
       const ty = vy + (y2-vy)*depth;
       const th = (depth * 0.9 + 0.1) * (y2-vy) * 0.45;
       const tw = th * 0.32;
       rCtx.fillStyle = lc(g1,g2,depth);
-      // Pine tree
       rCtx.beginPath();
       rCtx.moveTo(tx, ty);
       rCtx.lineTo(tx+tw, ty);
@@ -534,8 +515,9 @@ function loop(ts) {
   if(quizActive) roadOffset += dt * 0.085;
   curveFactor += (targetCurve - curveFactor) * 0.07;
   sceneBlend = Math.min(sceneBlend + dt * 0.0015, 1);
+
+  const prevRot = wheelRotate;
   wheelRotate += (targetWheelRot - wheelRotate) * 0.1;
-  document.getElementById('wheelImg').style.transform = `rotate(${wheelRotate}deg)`;
 
   if(quizActive && phase === 'idle') {
     phase = 'starting';
@@ -545,7 +527,6 @@ function loop(ts) {
   if(phase === 'approaching') {
     approachT = Math.min(approachT + dt * 0.0008, 1);
     if(approachT >= 1) { phase = 'waiting'; showQuestion(); }
-    // Scale question from VP outward
     const ease = 1 - Math.pow(1-approachT,3);
     const scl = 0.05 + ease * 0.95;
     document.getElementById('questionWrap').style.transform = `translate(-50%,-50%) scale(${scl})`;
@@ -553,6 +534,8 @@ function loop(ts) {
   }
 
   drawRoad();
+  // Re-render interior every frame for steering wheel rotation
+  renderInterior();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
@@ -563,23 +546,19 @@ function nextQuestion() {
   if(currentQ >= QUESTIONS.length) { showResult(); return; }
   const q = QUESTIONS[currentQ];
 
-  // Update progress
   document.getElementById('progress').classList.add('show');
   for(let i=0;i<6;i++){
     const d = document.getElementById('d'+i);
     d.className = 'dot' + (i<currentQ?' done':i===currentQ?' active':'');
   }
 
-  // Set scene
   nxtScene = currentQ;
   sceneBlend = 0;
 
-  // Set texts
   document.getElementById('questionText').textContent = q.q;
   document.getElementById('leftText').innerHTML = q.left.replace('\n','<br>');
   document.getElementById('rightText').innerHTML = q.right.replace('\n','<br>');
 
-  // Hide choices
   document.getElementById('choiceLeft').classList.remove('show');
   document.getElementById('choiceRight').classList.remove('show');
   document.getElementById('arrLeft').classList.remove('show');
@@ -607,11 +586,9 @@ function select(dir) {
   phase = 'selecting';
   answers.push(dir);
 
-  // Wheel turn
-  targetWheelRot = dir === 'left' ? -38 : 38;
+  targetWheelRot = dir === 'left' ? -40 : 40;
   targetCurve = dir === 'left' ? -1 : 1;
 
-  // Hide UI
   document.getElementById('questionWrap').classList.remove('show');
   document.getElementById('choiceLeft').classList.remove('show');
   document.getElementById('choiceRight').classList.remove('show');
@@ -664,17 +641,16 @@ function startQuiz() {
   quizActive = true;
 }
 
-// ─── Wheel drag interaction ───────────────────────────────
+// ─── Drag interaction (anywhere on screen) ────────────────
 let dragX0 = null, isDragging = false;
-const wrap = document.getElementById('wheelWrap');
-wrap.addEventListener('mousedown', e=>{ dragX0=e.clientX; isDragging=true; });
+document.addEventListener('mousedown', e=>{ dragX0=e.clientX; isDragging=true; });
 window.addEventListener('mousemove', e=>{
   if(!isDragging||phase!=='waiting') return;
   const d=e.clientX-dragX0;
   if(Math.abs(d)>45){ select(d<0?'left':'right'); isDragging=false; }
 });
 window.addEventListener('mouseup', ()=>{ isDragging=false; });
-wrap.addEventListener('touchstart', e=>{ dragX0=e.touches[0].clientX; isDragging=true; },{passive:true});
+document.addEventListener('touchstart', e=>{ dragX0=e.touches[0].clientX; isDragging=true; },{passive:true});
 window.addEventListener('touchmove', e=>{
   if(!isDragging||phase!=='waiting') return;
   const d=e.touches[0].clientX-dragX0;
